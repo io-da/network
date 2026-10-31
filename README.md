@@ -117,17 +117,6 @@ err = conn.Write(ctx, network.MessageText, []byte("hello"))
 
 HTTP(S) and WS(S) URLs are supported. WebSockets share transport, default headers, cookie jar, redirect policy, and handshake logging. The dialer exposes at most 1024 bytes of an unsuccessful handshake body for logging. Handshake timeout falls back to the client timeout; it does not set a connection lifetime deadline. The default message read limit is 1 MiB. Message reads, writes, and pings take their own contexts. Keep a reader active to process ping/pong and close frames. Reconnection and message replay are application responsibilities. `WebSocket` aliases `coder/websocket.Conn`, so its streaming, concurrency, and close semantics apply directly. HTTP response consumers and retry policies do not apply to WebSockets.
 
-## Migration from the extracted API
-
-- `NewClient` now returns `(*Client, error)` and accepts client options.
-- Request methods return `error`; use binding/streaming options for results.
-- `Post`, `Put`, and `Patch` take bodies through options.
-- `AwaitHeader` is replaced by `BindHeader` plus `Await`.
-- `ResponseHandler` becomes `HandleResponse(func(*http.Response) error)`.
-- Mutable `SetBehaviours` is replaced by explicit retry/logging configuration.
-- Logging uses an injected handler; OpenTelemetry references and `EndSpan` are removed.
-- Process-exiting Must helpers and obsolete error wrapper interfaces are removed.
-
 ## Redirects, sessions, proxies, and uploads
 
 Redirect following is **disabled by default**, including WebSocket handshakes and injected HTTP clients. A 3xx response is returned as `ErrStatus`, with its headers available through `BindHeader`. Opt in for the client or one request:
