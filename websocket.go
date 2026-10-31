@@ -2,6 +2,7 @@ package network
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"time"
 
@@ -68,10 +69,18 @@ func (c *Client) DialWebSocket(ctx context.Context, endpoint string, opts WebSoc
 		ctx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
-	client := c.config.httpClient
+	client := c.requestClient(c.config.followRedirects)
 	client.Timeout = 0
 	conn, tr.response, e = websocket.Dial(ctx, u.String(), &websocket.DialOptions{HTTPClient: &client, HTTPHeader: headers, Subprotocols: append([]string(nil), opts.Subprotocols...)})
 	if e != nil {
+		if tr.response != nil && tr.response.Body != nil {
+			defer tr.response.Body.Close()
+			if c.config.logger != nil && (c.config.logging.LogResponseBody || c.config.logging.LogResponseBodyOnError) {
+				tr.responseCapture = newCapture(c.config.logLimit)
+				// The dialer exposes at most 1024 bytes of a failed handshake.
+				_, _ = io.Copy(tr.responseCapture, io.LimitReader(tr.response.Body, 1024))
+			}
+		}
 		kind := ErrTransport
 		if tr.response != nil && tr.response.StatusCode != http.StatusSwitchingProtocols {
 			kind = ErrStatus

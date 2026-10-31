@@ -68,7 +68,7 @@ func TestHTTPMethodsAndBinding(t *testing.T) {
 		call  func(context.Context, string, ...RequestOption) error
 		async func(context.Context, string, ...RequestOption) *AsyncTransaction
 	}{
-		{"GET", c.Get, c.GetAsync}, {"HEAD", c.Head, c.HeadAsync}, {"POST", c.Post, c.PostAsync}, {"PUT", c.Put, c.PutAsync}, {"PATCH", c.Patch, c.PatchAsync}, {"DELETE", c.Delete, c.DeleteAsync},
+		{"GET", c.Get, c.GetAsync}, {"HEAD", c.Head, c.HeadAsync}, {"POST", c.Post, c.PostAsync}, {"PUT", c.Put, c.PutAsync}, {"PATCH", c.Patch, c.PatchAsync}, {"DELETE", c.Delete, c.DeleteAsync}, {"OPTIONS", c.Options, c.OptionsAsync},
 	} {
 		t.Run(method.name, func(t *testing.T) {
 			var result struct{ Name string }
@@ -379,7 +379,7 @@ func TestRedirectBodyReplayAndTimeout(t *testing.T) {
 	defer server.Close()
 	c := mustClient(t, server.URL)
 	var got []byte
-	if err := c.Post(context.Background(), "start", Body([]byte("old")), Body([]byte("new")), BindBytes(&got)); err != nil || string(got) != "new" {
+	if err := c.Post(context.Background(), "start", FollowRedirects(true), Body([]byte("old")), Body([]byte("new")), BindBytes(&got)); err != nil || string(got) != "new" {
 		t.Fatal(err, string(got))
 	}
 	if err := c.Get(context.Background(), "slow", Timeout(20*time.Millisecond)); !errors.Is(err, context.DeadlineExceeded) {

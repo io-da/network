@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-// Behaviours controls optional logging fields. Body logging is opt-in; captures
+// Behaviours controls logging fields. Error-body logging is enabled by default; captures
 // are bounded by WithLogBodyLimit. OnError applies to failed attempts as well as
 // final failures. Sensitive application body fields require caller redaction.
 type Behaviours struct {
@@ -57,16 +57,29 @@ func safeURL(u *url.URL) string {
 	clone.RawFragment = ""
 	return clone.String()
 }
+
+// DefaultLogging returns an independent policy with both error-body flags enabled.
+// WithLogging and WithRequestLogging replace the entire policy.
+func DefaultLogging() Behaviours {
+	return Behaviours{LogRequestBodyOnError: true, LogResponseBodyOnError: true}
+}
+func sensitiveHeader(key string) bool {
+	switch strings.ToLower(key) {
+	case "authorization", "proxy-authorization", "cookie", "set-cookie", "x-api-key":
+		return true
+	}
+	return false
+}
 func redactedHeaders(h http.Header) http.Header {
 	copy := h.Clone()
 	for key := range copy {
-		switch strings.ToLower(key) {
-		case "authorization", "proxy-authorization", "cookie", "set-cookie", "x-api-key":
+		if sensitiveHeader(key) {
 			copy[key] = []string{"[REDACTED]"}
 		}
 	}
 	return copy
 }
+
 func (c *Client) log(t *transaction, cfg requestConfig, kind string, start time.Time, err error) {
 	b := cfg.logging
 	if c.config.logger == nil || (err == nil && !b.LogSuccessfulTransactions && !b.LogRequestHeaders && !b.LogResponseHeaders && !b.LogRequestBody && !b.LogResponseBody) {

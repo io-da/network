@@ -17,15 +17,17 @@ type Client struct {
 	config clientConfig
 }
 type clientConfig struct {
-	headers    http.Header
-	httpClient http.Client
-	logger     LogHandler
-	logging    Behaviours
-	retry      RetryPolicy
-	timeout    time.Duration
-	maxBody    int64
-	logLimit   int
-	decoders   map[string]Decoder
+	followRedirects bool
+	maxRedirects    int
+	headers         http.Header
+	httpClient      http.Client
+	logger          LogHandler
+	logging         Behaviours
+	retry           RetryPolicy
+	timeout         time.Duration
+	maxBody         int64
+	logLimit        int
+	decoders        map[string]Decoder
 }
 type ClientOption func(*clientConfig) error
 
@@ -34,7 +36,10 @@ func NewClient(baseURL string, opts ...ClientOption) (*Client, error) {
 	if err != nil || u == nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https" && u.Scheme != "ws" && u.Scheme != "wss") || u.User != nil || u.Fragment != "" {
 		return nil, fmt.Errorf("%w: base URL must be an absolute HTTP(S) or WS(S) URL without credentials or fragment", ErrConfiguration)
 	}
-	cfg := clientConfig{httpClient: http.Client{Transport: http.DefaultTransport}, timeout: 30 * time.Second, maxBody: 16 << 20, logLimit: 4096, retry: RetryPolicy{FirstBackoff: time.Second, MaxBackoff: 30 * time.Second}, decoders: defaultDecoders()}
+	if _, err := url.ParseQuery(u.RawQuery); err != nil {
+		return nil, ErrConfiguration
+	}
+	cfg := clientConfig{maxRedirects: 10, logging: DefaultLogging(), httpClient: http.Client{Transport: http.DefaultTransport}, timeout: 30 * time.Second, maxBody: 16 << 20, logLimit: 4096, retry: RetryPolicy{FirstBackoff: time.Second, MaxBackoff: 30 * time.Second}, decoders: defaultDecoders()}
 	for _, opt := range opts {
 		if opt == nil {
 			return nil, ErrConfiguration
@@ -51,6 +56,9 @@ func NewClient(baseURL string, opts ...ClientOption) (*Client, error) {
 	}
 	// Own transport configuration while preserving pooling across this client's calls.
 	if tr, ok := cfg.httpClient.Transport.(*http.Transport); ok {
+		if tr == nil {
+			return nil, ErrConfiguration
+		}
 		cfg.httpClient.Transport = tr.Clone()
 	}
 	return &Client{base: u, config: cfg}, nil
@@ -62,6 +70,9 @@ func (c *Client) CloseIdleConnections() { c.config.httpClient.CloseIdleConnectio
 func (c *Client) resolve(endpoint string) (*url.URL, error) {
 	ref, err := url.Parse(endpoint)
 	if err != nil {
+		return nil, ErrConfiguration
+	}
+	if _, err := url.ParseQuery(ref.RawQuery); err != nil {
 		return nil, ErrConfiguration
 	}
 	if ref.User != nil || ref.Fragment != "" || (ref.Host != "" && !ref.IsAbs()) {
@@ -89,7 +100,7 @@ func (c *Client) resolve(endpoint string) (*url.URL, error) {
 
 func (c *Client) Do(ctx context.Context, method, endpoint string, opts ...RequestOption) (err error) {
 	start := time.Now()
-	cfg := requestConfig{retry: c.config.retry, logging: c.config.logging, maxBody: c.config.maxBody, timeout: c.config.timeout}
+	cfg := requestConfig{followRedirects: c.config.followRedirects, retry: c.config.retry, logging: c.config.logging, maxBody: c.config.maxBody, timeout: c.config.timeout}
 	tr := &transaction{ctx: ctx}
 	defer func() {
 		if cfg.callback != nil {
@@ -203,4 +214,12 @@ func sameOrigin(a, b *url.URL) bool {
 		return s
 	}
 	return strings.EqualFold(a.Host, b.Host) && scheme(a.Scheme) == scheme(b.Scheme)
+}
+
+// Options performs an HTTP OPTIONS request.
+func (c *Client) Options(ctx context.Context, endpoint string, opts ...RequestOption) error {
+	return c.Do(ctx, http.MethodOptions, endpoint, opts...)
+}
+func (c *Client) OptionsAsync(ctx context.Context, endpoint string, opts ...RequestOption) *AsyncTransaction {
+	return c.DoAsync(ctx, http.MethodOptions, endpoint, opts...)
 }

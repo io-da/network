@@ -20,14 +20,16 @@ import (
 type RequestOption func(*requestConfig, *http.Request) error
 
 type requestConfig struct {
-	retry        RetryPolicy
-	timeout      time.Duration
-	maxBody      int64
-	logging      Behaviours
-	consume      func(context.Context, *http.Response) error
-	consumeError func(context.Context, *http.Response) error
-	metadata     []func(*http.Response)
-	callback     func(error)
+	followRedirects  bool
+	acceptedStatuses map[int]bool
+	retry            RetryPolicy
+	timeout          time.Duration
+	maxBody          int64
+	logging          Behaviours
+	consume          func(context.Context, *http.Response) error
+	consumeError     func(context.Context, *http.Response) error
+	metadata         []func(*http.Response)
+	callback         func(error)
 }
 
 func (r requestConfig) validate() error {
@@ -53,7 +55,7 @@ func WithHTTPClient(client *http.Client) ClientOption {
 func WithTLSConfig(cfg *tls.Config) ClientOption {
 	return func(c *clientConfig) error {
 		tr, ok := c.httpClient.Transport.(*http.Transport)
-		if !ok || cfg == nil {
+		if !ok || tr == nil || cfg == nil {
 			return fmt.Errorf("%w: TLS configuration requires an HTTP transport", ErrConfiguration)
 		}
 		clone := tr.Clone()

@@ -85,7 +85,7 @@ func (t *transaction) failure(kind, cause error) error {
 	return e
 }
 func (p RetryPolicy) allows(t *transaction, err error) bool {
-	if err == nil || t.retry >= p.MaxRetries || t.ctx.Err() != nil || errors.Is(err, ErrDecode) {
+	if err == nil || t.retry >= p.MaxRetries || t.ctx.Err() != nil || errors.Is(err, ErrDecode) || errors.Is(err, ErrRedirectLimit) || errors.Is(err, ErrRedirectPolicy) {
 		return false
 	}
 	if t.request.Body != nil && t.request.Body != http.NoBody && t.request.GetBody == nil {
@@ -147,11 +147,12 @@ func (c *Client) execute(t *transaction, cfg requestConfig, start time.Time) (er
 	}
 }
 func (c *Client) attempt(t *transaction, cfg requestConfig) error {
-	if c.config.logger != nil && (cfg.logging.LogRequestBody || cfg.logging.LogRequestBodyOnError) && t.request.Body != nil {
+	if c.config.logger != nil && (cfg.logging.LogRequestBody || cfg.logging.LogRequestBodyOnError) && t.request.Body != nil && t.request.Body != http.NoBody {
 		t.requestCapture = newCapture(c.config.logLimit)
 		t.request.Body = &capturedBody{ReadCloser: t.request.Body, capture: t.requestCapture}
 	}
-	res, err := c.config.httpClient.Do(t.request)
+	client := c.requestClient(cfg.followRedirects)
+	res, err := client.Do(t.request)
 	if err != nil {
 		return t.failure(ErrTransport, err)
 	}
@@ -171,7 +172,11 @@ func (c *Client) attempt(t *transaction, cfg requestConfig) error {
 	// Keep closure ownership even when a handler replaces Response.Body.
 	res.Body = &readerCloser{Reader: reader}
 	ctx := context.WithValue(t.ctx, decoderContextKey{}, c.config.decoders)
-	if IsErrorResponse(res) {
+	accepted := !IsErrorResponse(res)
+	if cfg.acceptedStatuses != nil {
+		accepted = cfg.acceptedStatuses[res.StatusCode]
+	}
+	if !accepted {
 		if cfg.consumeError != nil && t.request.Method != "HEAD" {
 			err = cfg.consumeError(ctx, res)
 			if err != nil {
@@ -182,7 +187,7 @@ func (c *Client) attempt(t *transaction, cfg requestConfig) error {
 		}
 		return t.failure(ErrStatus, err)
 	}
-	if t.request.Method == "HEAD" || res.StatusCode == http.StatusNoContent || res.StatusCode == http.StatusResetContent {
+	if t.request.Method == "HEAD" || res.StatusCode == http.StatusNoContent || res.StatusCode == http.StatusResetContent || res.StatusCode == http.StatusNotModified {
 		return nil
 	}
 	if cfg.consume != nil {

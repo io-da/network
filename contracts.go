@@ -15,6 +15,7 @@ type ClientContract interface {
 	Put(context.Context, string, ...RequestOption) error
 	Patch(context.Context, string, ...RequestOption) error
 	Delete(context.Context, string, ...RequestOption) error
+	Options(context.Context, string, ...RequestOption) error
 	DoAsync(context.Context, string, string, ...RequestOption) *AsyncTransaction
 	GetAsync(context.Context, string, ...RequestOption) *AsyncTransaction
 	HeadAsync(context.Context, string, ...RequestOption) *AsyncTransaction
@@ -22,6 +23,7 @@ type ClientContract interface {
 	PutAsync(context.Context, string, ...RequestOption) *AsyncTransaction
 	PatchAsync(context.Context, string, ...RequestOption) *AsyncTransaction
 	DeleteAsync(context.Context, string, ...RequestOption) *AsyncTransaction
+	OptionsAsync(context.Context, string, ...RequestOption) *AsyncTransaction
 }
 
 // TransactionContract is a read-only view for retry policies. Do not retain or

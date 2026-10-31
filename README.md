@@ -27,7 +27,7 @@ err = client.Post(ctx, "users",
 
 ## HTTP requests
 
-`Do(ctx, method, endpoint, options...)` is the core operation. `Get`, `Head`, `Post`, `Put`, `Patch`, and `Delete` delegate to it. All return `error`. Relative endpoint paths append to the base path; query parameters merge with endpoint values taking precedence. Absolute endpoints replace the base URL. Default headers only apply to the base origin; explicit per-request headers apply to the selected endpoint.
+`Do(ctx, method, endpoint, options...)` is the core operation. `Get`, `Head`, `Post`, `Put`, `Patch`, `Delete`, and `Options` delegate to it. All return `error`. Relative endpoint paths append to the base path; query parameters merge with endpoint values taking precedence. Absolute endpoints replace the base URL. Default headers only apply to the base origin; explicit per-request headers apply to the selected endpoint.
 
 Options run in caller order. Scalar settings and headers use the last value. Two success-body consumers or two error-body consumers are rejected. Client options and request options are separate types so mutable binding destinations cannot accidentally become client defaults.
 
@@ -35,26 +35,32 @@ Options run in caller order. Scalar settings and headers use the last value. Two
 | --- | --- |
 | `Body(data)` | Snapshot bytes; replayable for retries and redirects |
 | `JSONBody(value)` | Encode and snapshot JSON when creating the option |
+| `FormBody(values)` | Snapshot and encode URL-encoded form fields |
+| `MultipartBody(fields, files...)` | Stream replayable file uploads without buffering files |
+| `Query(values)`, `QueryParam(key, value)` | Encode query parameters and preserve repeated values |
 | `ReaderBody(reader)` | Stream a single-use body, transferring ownership |
 | `ReplayableBody(factory, size)` | Open an independent reader for each attempt; size `-1` is unknown |
 | `BindJSON(&value)`, `BindXML(&value)` | Explicit decoding, independent of response Content-Type |
 | `BindBody(&value)` | Decode by Content-Type, including `+json` and `+xml` |
 | `BindError(&value)`, `BindErrorJSON(&value)` | Decode error responses while retaining the HTTP error |
-| `BindBytes(&data)` | Buffer a response explicitly |
+| `BindBytes(&data)`, `BindString(&text)` | Buffer binary or text responses explicitly |
+| `BindErrorBytes(&data)`, `HandleErrorResponse(handler)` | Consume arbitrary error payloads |
+| `AcceptStatus(codes...)` | Override accepted statuses, e.g. `200, 304` |
+| `FollowRedirects(enabled)` | Override redirect following for one request |
 | `WriteBody(writer)` | Stream a response to a writer |
 | `HandleResponse(handler)` | Custom synchronous consumption of successful responses |
 | `BindHeader`, `BindCookies`, `BindStatusCode` | Metadata on successful and unsuccessful responses, including HEAD |
 | `WithRequest(fn)` | Customize the request before execution |
 
-The client closes every HTTP response. A custom handler must finish reading before returning and must not retain the body. Without a consumer, at most 64 KiB is drained before closing; this bounds unnecessary work, but larger discarded responses may prevent connection reuse. HEAD, 204, and 205 skip body decoding. Other empty bodies produce a decoding error when a decoder is requested. Decoders require one complete document and reject trailing JSON/XML documents. A destination implementing `Validate(context.Context) error` is validated after decoding.
+The client closes every HTTP response. A custom handler must finish reading before returning and must not retain the body. Without a consumer, at most 64 KiB is drained before closing; this bounds unnecessary work, but larger discarded responses may prevent connection reuse. HEAD, 204, 205, and accepted 304 responses skip body decoding. Other empty bodies produce a decoding error when a decoder is requested. Decoders require one complete document and reject trailing JSON/XML documents. A destination implementing `Validate(context.Context) error` is validated after decoding.
 
 Buffered, decoded, and streamed responses default to a 16 MiB limit. Override with `WithMaxResponseBody` or per-request `MaxResponseBody`; zero disables the limit. Writers and decoded destinations can contain partial data after failure. A custom handler that does not read the full body cannot detect whether unread content exceeds the limit. `WithDecoder(mediaType, decoder)` registers additional formats. `ParseJSON[T](data)` and `ParseXML[T](data)` provide standalone conversion helpers.
 
-`WithHTTPClient` preserves custom transports, cookies, and redirect policy. Standard HTTP transports and TLS configurations are cloned at initialization, then reused. Custom transports are shared and must be concurrency-safe. Use `WithTLSConfig` after `WithHTTPClient` when overriding TLS. Client timeout defaults to 30 seconds across all attempts and backoff; an injected HTTP client's own timeout also applies to each attempt.
+`WithHTTPClient` preserves custom transports and cookies. Its redirect checker runs only when redirect following is explicitly enabled, subject to the client redirect limit. Standard HTTP transports and TLS configurations are cloned at initialization, then reused. Custom transports are shared and must be concurrency-safe. Use `WithTLSConfig` after `WithHTTPClient` when overriding TLS. Client timeout defaults to 30 seconds across all attempts and backoff; an injected HTTP client's own timeout also applies to each attempt.
 
 ## Errors and retries
 
-Use `errors.Is` with `ErrConfiguration`, `ErrTransport`, `ErrStatus`, `ErrDecode`, or `ErrBodyTooLarge`. Use `errors.As(err, &networkError)` with `var networkError *network.Error` for HTTP metadata. Status zero means no HTTP response was received. Underlying cancellation, transport, and decoding errors remain available through unwrapping. Non-2xx responses are HTTP errors, including redirects when automatic redirect following is disabled. An error response with malformed bound content matches both `ErrStatus` and `ErrDecode`.
+Use `errors.Is` with `ErrConfiguration`, `ErrTransport`, `ErrStatus`, `ErrDecode`, `ErrBodyTooLarge`, `ErrRedirectLimit`, or `ErrRedirectPolicy`. Use `errors.As(err, &networkError)` with `var networkError *network.Error` for HTTP metadata. Status zero means no HTTP response was received. Underlying cancellation, transport, and decoding errors remain available through unwrapping. Non-2xx responses are HTTP errors, including redirects when automatic redirect following is disabled. An error response with malformed bound content matches both `ErrStatus` and `ErrDecode`.
 
 Retries are disabled by default. Configure `WithRetryPolicy(network.RetryPolicy{...})`, or `Retries(n)` per request. Default retry eligibility requires an idempotent method and a replayable body, and permits transport failures or HTTP 408/429/500/502/503/504. Decoding failures and canceled contexts are never retried. A custom `Condition` may permit other methods/statuses; it cannot bypass replay or decoding restrictions. Enabling POST retries requires application-level duplicate handling.
 
@@ -70,6 +76,7 @@ client, err := network.NewClient(baseURL,
     network.WithLogging(network.Behaviours{
         LogSuccessfulTransactions: true,
         LogRequestHeadersOnError: true,
+        LogRequestBodyOnError: true,
         LogResponseHeadersOnError: true,
         LogResponseBodyOnError: true,
     }),
@@ -79,7 +86,17 @@ client, err := network.NewClient(baseURL,
 
 No handler means no logging or body capture. With a handler, failures are emitted automatically; successful events require `LogSuccessfulTransactions` or an always-on field flag. Each field uses `always || (failed && onError)`. Events distinguish retry attempts, final completion, and WebSocket handshakes. Per-request `WithRequestLogging` overrides the client policy.
 
-Bodies are opt-in and capture only the consumed prefix, bounded to 4096 bytes by default. Truncation flags report capture limits. Authorization, proxy authorization, cookies, Set-Cookie, and X-Api-Key headers are redacted. Logged URLs omit credentials, query strings, and fragments. Application body fields and arbitrary underlying errors may contain sensitive data; use the handler to apply application-specific redaction. Logging handlers and callbacks run synchronously and must be concurrency-safe and must not panic.
+**Request and response bodies are logged on errors by default when a handler is configured.** Successful bodies are not logged by default. Captures contain only the consumed prefix, bounded to 4096 bytes by default. No logger means no capture.
+
+`DefaultLogging()` returns the default policy. `WithLogging` and `WithRequestLogging` replace the entire policy, so use `WithLogging(network.Behaviours{})` to disable both body fields, or modify `DefaultLogging()` to keep defaults while enabling other fields:
+
+```go
+logging := network.DefaultLogging()
+logging.LogSuccessfulTransactions = true
+// Pass network.WithLogging(logging) to NewClient.
+```
+
+Truncation flags report capture limits. Authorization, proxy authorization, cookies, Set-Cookie, and X-Api-Key headers are redacted. Logged URLs omit credentials, query strings, and fragments. Application body fields and arbitrary underlying errors may contain sensitive data; use the handler to apply application-specific redaction. Logging handlers and callbacks run synchronously and must be concurrency-safe and must not panic.
 
 ## Async and WebSockets
 
@@ -98,7 +115,7 @@ defer conn.Close(network.StatusNormalClosure, "done")
 err = conn.Write(ctx, network.MessageText, []byte("hello"))
 ```
 
-HTTP(S) and WS(S) URLs are supported. WebSockets share transport, default headers, cookie jar, and handshake logging. Handshake timeout falls back to the client timeout; it does not set a connection lifetime deadline. The default message read limit is 1 MiB. Message reads, writes, and pings take their own contexts. Keep a reader active to process ping/pong and close frames. Reconnection and message replay are application responsibilities. `WebSocket` aliases `coder/websocket.Conn`, so its streaming, concurrency, and close semantics apply directly. HTTP response consumers and retry policies do not apply to WebSockets.
+HTTP(S) and WS(S) URLs are supported. WebSockets share transport, default headers, cookie jar, redirect policy, and handshake logging. The dialer exposes at most 1024 bytes of an unsuccessful handshake body for logging. Handshake timeout falls back to the client timeout; it does not set a connection lifetime deadline. The default message read limit is 1 MiB. Message reads, writes, and pings take their own contexts. Keep a reader active to process ping/pong and close frames. Reconnection and message replay are application responsibilities. `WebSocket` aliases `coder/websocket.Conn`, so its streaming, concurrency, and close semantics apply directly. HTTP response consumers and retry policies do not apply to WebSockets.
 
 ## Migration from the extracted API
 
@@ -111,6 +128,37 @@ HTTP(S) and WS(S) URLs are supported. WebSockets share transport, default header
 - Logging uses an injected handler; OpenTelemetry references and `EndSpan` are removed.
 - Process-exiting Must helpers and obsolete error wrapper interfaces are removed.
 
+## Redirects, sessions, proxies, and uploads
+
+Redirect following is **disabled by default**, including WebSocket handshakes and injected HTTP clients. A 3xx response is returned as `ErrStatus`, with its headers available through `BindHeader`. Opt in for the client or one request:
+
+```go
+client, err := network.NewClient(baseURL,
+    network.WithFollowRedirects(true),
+    network.WithMaxRedirects(5),
+)
+// Disable following for this call even when enabled on the client.
+err = client.Get(ctx, "/resource", network.FollowRedirects(false))
+```
+
+The default limit is 10 redirect hops. A custom `http.Client.CheckRedirect` runs within that limit; it cannot bypass a disabled policy. Redirect-limit and custom-policy failures are not retried. Standard Go method rewriting applies: 301/302/303 normally turn POST into GET; 307/308 preserve methods and require a replayable body. Explicit authentication, cookie, and API-key headers are removed on cross-origin redirects. Cookie jars independently follow standard cookie domain rules. See the [Go HTTP client documentation](https://pkg.go.dev/net/http#Client) for redirect and cookie behavior.
+
+- **Sessions:** pass an `http.CookieJar` using `WithCookieJar(jar)`. Nil disables persistence. For individual cookies use `WithRequest` and `req.AddCookie`.
+- **Proxies:** `WithProxy(http.ProxyURL(proxyURL))` configures a standard transport; `WithProxy(nil)` disables environment proxies. Apply it after `WithHTTPClient`. Custom transports configure their own proxy behavior.
+- **Forms:** `FormBody(url.Values{...})` handles URL encoding and repeated fields.
+- **File uploads:** `MultipartBody` accepts `MultipartFile{FieldName, FileName, ContentType, Open}`. `Open` returns an independent `io.ReadCloser` for each attempt; the client opens it lazily and closes it. File contents are streamed, while field values and headers are snapshotted in memory. Replay requires file contents to remain consistent across opens.
+- **Conditional requests:** combine headers such as `If-None-Match` with `AcceptStatus(200, 304)`; a 304 skips decoding and leaves the bound destination unchanged. The package does not maintain a response cache.
+- **Downloads:** `WriteBody(writer)` streams to a file or other writer. The standard transport handles gzip decompression automatically unless you explicitly control `Accept-Encoding`. The response limit applies to decompressed bytes.
+- **Event streams:** use `HandleResponse`, `Timeout(0)`, and `MaxResponseBody(0)` with a cancellable context for long-lived SSE or NDJSON reads. Consume the stream inside the handler; cancel its context to interrupt a blocked read. Reconnection and event parsing belong to the application.
+
 ## Verification
 
-Run `./scripts/test.sh`. It runs the race detector, tests all packages, enforces at least **90% statement coverage**, and runs `go vet`. Tests use local loopback HTTP/TLS/WebSocket servers; no external service is required. Go may need to download the pinned WebSocket module on the first run.
+Run the race-enabled coverage suite and vet:
+
+```sh
+go test -race -covermode=atomic -coverprofile=coverage.out ./...
+go tool cover -func=coverage.out
+go vet ./...
+```
+
+Maintain at least **90% statement coverage**. Tests use local loopback HTTP/TLS/WebSocket and proxy servers; no external service is required. Go may need to download the pinned WebSocket module on the first run.

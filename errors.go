@@ -9,6 +9,8 @@ import (
 )
 
 var (
+	ErrRedirectPolicy         = errors.New("network: redirect policy rejected request")
+	ErrRedirectLimit          = errors.New("network: redirect limit exceeded")
 	ErrConfiguration          = errors.New("network: invalid configuration")
 	ErrTransport              = errors.New("network: transport failure")
 	ErrStatus                 = errors.New("network: unexpected HTTP status")
