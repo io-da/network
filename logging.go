@@ -30,6 +30,9 @@ type Behaviours struct {
 // Events contain detached headers/body snapshots and may be retained.
 type LogHandler func(context.Context, LogEvent)
 type LogEvent struct {
+	ExchangeID            uint64
+	RequestBodyEvidence   BodyEvidence
+	ResponseBodyEvidence  BodyEvidence
 	Kind                  string // "retry", "complete", or "websocket"
 	Method                string
 	URL                   string
@@ -85,7 +88,7 @@ func (c *Client) log(t *transaction, cfg requestConfig, kind string, start time.
 	if c.config.logger == nil || (err == nil && !b.LogSuccessfulTransactions && !b.LogRequestHeaders && !b.LogResponseHeaders && !b.LogRequestBody && !b.LogResponseBody) {
 		return
 	}
-	event := LogEvent{Kind: kind, Error: err, Duration: time.Since(start), Attempts: t.retry + 1}
+	event := LogEvent{ExchangeID: t.id, Kind: kind, Error: err, Duration: time.Since(start), Attempts: t.retry + 1}
 	failed := err != nil
 	if t.request != nil {
 		event.Method = t.request.Method
@@ -102,9 +105,11 @@ func (c *Client) log(t *transaction, cfg requestConfig, kind string, start time.
 	}
 	if b.LogRequestBody || (failed && b.LogRequestBodyOnError) {
 		event.RequestBody, event.RequestBodyTruncated = t.requestCapture.snapshot()
+		event.RequestBodyEvidence = t.requestCapture.evidence()
 	}
 	if b.LogResponseBody || (failed && b.LogResponseBodyOnError) {
 		event.ResponseBody, event.ResponseBodyTruncated = t.responseCapture.snapshot()
+		event.ResponseBodyEvidence = t.responseCapture.evidence()
 	}
 	ctx := t.ctx
 	if ctx == nil {
@@ -118,6 +123,7 @@ type capture struct {
 	buf       bytes.Buffer
 	limit     int
 	truncated bool
+	complete  bool
 }
 
 func newCapture(limit int) *capture { return &capture{limit: limit} }
@@ -150,5 +156,8 @@ type capturedBody struct {
 func (b *capturedBody) Read(p []byte) (int, error) {
 	n, err := b.ReadCloser.Read(p)
 	b.capture.Write(p[:n])
+	if err == io.EOF {
+		b.capture.markComplete()
+	}
 	return n, err
 }

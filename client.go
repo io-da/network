@@ -17,6 +17,7 @@ type Client struct {
 	config clientConfig
 }
 type clientConfig struct {
+	prepare         PrepareAttemptFunc
 	followRedirects bool
 	maxRedirects    int
 	headers         http.Header
@@ -100,13 +101,16 @@ func (c *Client) resolve(endpoint string) (*url.URL, error) {
 
 func (c *Client) Do(ctx context.Context, method, endpoint string, opts ...RequestOption) (err error) {
 	start := time.Now()
-	cfg := requestConfig{followRedirects: c.config.followRedirects, retry: c.config.retry, logging: c.config.logging, maxBody: c.config.maxBody, timeout: c.config.timeout}
-	tr := &transaction{ctx: ctx}
+	cfg := requestConfig{prepare: c.config.prepare, followRedirects: c.config.followRedirects, retry: c.config.retry, logging: c.config.logging, maxBody: c.config.maxBody, timeout: c.config.timeout}
+	tr := &transaction{ctx: ctx, id: nextExchangeID.Add(1)}
 	defer func() {
 		if cfg.callback != nil {
 			cfg.callback(err)
 		}
 		c.log(tr, cfg, "complete", start, err)
+		if cfg.report != nil {
+			cfg.report.finish(c, tr, cfg, start)
+		}
 	}()
 	fail := func(kind, cause error) error { return tr.failure(kind, cause) }
 	if ctx == nil {

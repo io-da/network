@@ -20,6 +20,8 @@ import (
 type RequestOption func(*requestConfig, *http.Request) error
 
 type requestConfig struct {
+	prepare          PrepareAttemptFunc
+	report           *FailureReport
 	followRedirects  bool
 	acceptedStatuses map[int]bool
 	retry            RetryPolicy

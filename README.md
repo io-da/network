@@ -64,7 +64,7 @@ Use `errors.Is` with `ErrConfiguration`, `ErrTransport`, `ErrStatus`, `ErrDecode
 
 Retries are disabled by default. Configure `WithRetryPolicy(network.RetryPolicy{...})`, or `Retries(n)` per request. Default retry eligibility requires an idempotent method and a replayable body, and permits transport failures or HTTP 408/429/500/502/503/504. Decoding failures and canceled contexts are never retried. A custom `Condition` may permit other methods/statuses; it cannot bypass replay or decoding restrictions. Enabling POST retries requires application-level duplicate handling.
 
-Backoff doubles up to `MaxBackoff`; optional jitter spreads retry load. `Retry-After` is honored up to the same maximum. The caller's context and overall timeout bound waits. Metadata/error binding destinations describe the latest received response; if a subsequent attempt fails before receiving a response, inspect the returned error (status zero) rather than stale bound metadata.
+Backoff doubles up to `MaxBackoff`; optional jitter spreads retry load. `Retry-After` is a server minimum and may exceed `MaxBackoff`; only the local exponential delay is capped. The caller's context and overall timeout bound the resulting wait. Metadata/error binding destinations describe the latest received response; if a subsequent attempt fails before receiving a response, inspect the returned error (status zero) rather than stale bound metadata.
 
 ## Logging
 
@@ -86,7 +86,7 @@ client, err := network.NewClient(baseURL,
 
 No handler means no logging or body capture. With a handler, failures are emitted automatically; successful events require `LogSuccessfulTransactions` or an always-on field flag. Each field uses `always || (failed && onError)`. Events distinguish retry attempts, final completion, and WebSocket handshakes. Per-request `WithRequestLogging` overrides the client policy.
 
-**Request and response bodies are logged on errors by default when a handler is configured.** Successful bodies are not logged by default. Captures contain only the consumed prefix, bounded to 4096 bytes by default. No logger means no capture.
+**Request and response bodies are logged on errors by default when a handler is configured.** Successful bodies are not logged by default. Captures are bounded to 4096 bytes by default. Replayable requests are captured before sending; response bodies and non-replayable requests are captured as consumed. No logger means no capture.
 
 `DefaultLogging()` returns the default policy. `WithLogging` and `WithRequestLogging` replace the entire policy, so use `WithLogging(network.Behaviours{})` to disable both body fields, or modify `DefaultLogging()` to keep defaults while enabling other fields:
 
@@ -151,3 +151,58 @@ go vet ./...
 ```
 
 Maintain at least **90% statement coverage**. Tests use local loopback HTTP/TLS/WebSocket and proxy servers; no external service is required. Go may need to download the pinned WebSocket module on the first run.
+
+## SDK integration and deferred validation
+
+`client.RoundTripper()` wraps the configured transport for SDK-owned requests.
+`client.HTTPClient()` provides that adapter with the configured cookie jar and
+redirect policy. Both preserve streaming response ownership and writable HTTP
+upgrade bodies. The SDK must read/close its response. The adapter does not decode,
+limit, drain, retry, change URLs, or apply default headers to SDK requests. HTTP
+statuses remain responses, not transport errors. `HTTPClient()` deliberately has
+zero Timeout: Go's timeout body wrapper hides the writer needed for upgrades.
+Use request-context deadlines, or set Timeout explicitly for HTTP-only SDKs.
+Do not install an adapter back into its own client's underlying transport.
+
+`WithPrepareAttempt(fn)` installs a client hook; `PrepareAttempt(fn)` overrides it
+for a native request. It runs after backoff and body recreation, before capture
+and sending, with a zero-based attempt number. Use it to refresh credentials or
+signatures, respecting the supplied context. Preparation errors abort without a
+retry. SDK adapters call it once per RoundTrip with attempt zero; the SDK owns its
+retry numbering. Native redirects happen inside net/http and do not invoke this
+hook per redirect; use a signing transport when every redirected send must be
+signed. Keep GetBody consistent if replacing a body in the hook.
+
+Replayable requests are now captured via a separate GetBody reader before sending,
+so a connection failure still has request evidence. Captures remain bounded and
+never consume the transmission body. GetBody factories may be invoked for
+logging as well as replay; they must return independent, context-aware readers.
+A diagnostic snapshot failure does not fail the request. Non-replayable streams
+are observed as consumed. `RequestBodyEvidence` and `ResponseBodyEvidence` report
+`complete`, `partial`, or `unavailable`; these indicate captured evidence, not
+proof of delivery. `ExchangeID` correlates completion, retries and later reports.
+
+```go
+report := new(network.FailureReport)
+defer report.Release()
+var payload []byte
+err := client.Get(ctx, "/result",
+    network.CaptureExchange(report), network.BindBytes(&payload))
+if err != nil { return err }
+if err := validate(payload); err != nil {
+    report.ReportFailure(err) // includes enabled OnError fields for HTTP 200
+    return err
+}
+```
+
+For SDK requests, attach the handle with
+`network.ContextWithFailureReport(ctx, report)`. Each handle belongs to one
+RoundTrip; use separate handles for SDK retries/redirects. Call `ReportFailure`
+after consuming the response to EOF or closing it. It emits at most one
+`validation_failure` event and returns false when the exchange is unfinished,
+already reported/released, or the supplied error is nil. Native handles become
+ready when Do returns and retain the final attempt. Reports retain detached,
+bounded snapshots and context values until reported or released; always Release
+after successful validation. Reporting does not change the completed HTTP result
+or trigger retries. Capture and emitted fields still obey the logging policy;
+no handler means no body capture.

@@ -471,11 +471,11 @@ func TestRetryPolicyAndState(t *testing.T) {
 		t.Fatal("retry-after")
 	}
 	r.Header.Set("Retry-After", "9999999999")
-	if p.delay(0, r) != 2*time.Second {
+	if p.delay(0, r) <= 2*time.Second {
 		t.Fatal("cap")
 	}
 	r.Header.Set("Retry-After", time.Now().Add(time.Hour).UTC().Format(http.TimeFormat))
-	if p.delay(0, r) != 2*time.Second {
+	if p.delay(0, r) <= 2*time.Second {
 		t.Fatal("date")
 	}
 	for _, p := range []RetryPolicy{{FirstBackoff: -1}, {MaxBackoff: -1}, {FirstBackoff: 2, MaxBackoff: 1}} {

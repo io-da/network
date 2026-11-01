@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"io"
+	"math"
 	"math/rand/v2"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -40,27 +42,41 @@ func (p RetryPolicy) delay(attempt int, res *http.Response) time.Duration {
 	if p.Jitter && delay > 0 {
 		delay = time.Duration(rand.Int64N(int64(delay)))
 	}
+	if delay > p.MaxBackoff {
+		delay = p.MaxBackoff
+	}
 	if res != nil {
-		value := res.Header.Get("Retry-After")
-		if secs, err := strconv.ParseInt(value, 10, 64); err == nil && secs >= 0 {
-			if secs > int64(p.MaxBackoff/time.Second) {
-				delay = p.MaxBackoff
-			} else if d := time.Duration(secs) * time.Second; d > delay {
-				delay = d
+		value := strings.TrimSpace(res.Header.Get("Retry-After"))
+		// Saturate large valid delta-seconds rather than overflowing or shortening
+		// the server's minimum. Context cancellation still bounds the wait.
+		digits := value != ""
+		for _, ch := range value {
+			if ch < '0' || ch > '9' {
+				digits = false
+				break
+			}
+		}
+		if digits {
+			secs, err := strconv.ParseUint(value, 10, 64)
+			minimum := time.Duration(math.MaxInt64)
+			if err == nil && secs <= uint64(math.MaxInt64/int64(time.Second)) {
+				minimum = time.Duration(secs) * time.Second
+			}
+			if minimum > delay {
+				delay = minimum
 			}
 		} else if date, err := http.ParseTime(value); err == nil {
-			if d := time.Until(date); d > delay {
-				delay = d
+			if minimum := time.Until(date); minimum > delay {
+				delay = minimum
 			}
 		}
 	}
-	if delay > p.MaxBackoff {
-		return p.MaxBackoff
-	}
+
 	return delay
 }
 
 type transaction struct {
+	id              uint64
 	ctx             context.Context
 	request         *http.Request
 	response        *http.Response
@@ -85,7 +101,7 @@ func (t *transaction) failure(kind, cause error) error {
 	return e
 }
 func (p RetryPolicy) allows(t *transaction, err error) bool {
-	if err == nil || t.retry >= p.MaxRetries || t.ctx.Err() != nil || errors.Is(err, ErrDecode) || errors.Is(err, ErrRedirectLimit) || errors.Is(err, ErrRedirectPolicy) {
+	if err == nil || t.retry >= p.MaxRetries || t.ctx.Err() != nil || errors.Is(err, ErrConfiguration) || errors.Is(err, ErrDecode) || errors.Is(err, ErrRedirectLimit) || errors.Is(err, ErrRedirectPolicy) {
 		return false
 	}
 	if t.request.Body != nil && t.request.Body != http.NoBody && t.request.GetBody == nil {
@@ -147,10 +163,16 @@ func (c *Client) execute(t *transaction, cfg requestConfig, start time.Time) (er
 	}
 }
 func (c *Client) attempt(t *transaction, cfg requestConfig) error {
-	if c.config.logger != nil && (cfg.logging.LogRequestBody || cfg.logging.LogRequestBodyOnError) && t.request.Body != nil && t.request.Body != http.NoBody {
-		t.requestCapture = newCapture(c.config.logLimit)
-		t.request.Body = &capturedBody{ReadCloser: t.request.Body, capture: t.requestCapture}
+	if cfg.prepare != nil {
+		if err := cfg.prepare(t.ctx, t.request, t.retry); err != nil {
+			if t.request.Body != nil {
+				t.request.Body.Close()
+			}
+			return t.failure(ErrConfiguration, err)
+		}
 	}
+	c.captureRequest(t, cfg)
+
 	client := c.requestClient(cfg.followRedirects)
 	res, err := client.Do(t.request)
 	if err != nil {
@@ -167,7 +189,7 @@ func (c *Client) attempt(t *transaction, cfg requestConfig) error {
 	}
 	if c.config.logger != nil && (cfg.logging.LogResponseBody || cfg.logging.LogResponseBodyOnError) {
 		t.responseCapture = newCapture(c.config.logLimit)
-		reader = io.TeeReader(reader, t.responseCapture)
+		reader = &capturedBody{ReadCloser: &readerCloser{Reader: reader}, capture: t.responseCapture}
 	}
 	// Keep closure ownership even when a handler replaces Response.Body.
 	res.Body = &readerCloser{Reader: reader}

@@ -61,3 +61,11 @@ type WebSocketClientContract interface {
 
 var _ AsyncTransactionContract = (*AsyncTransaction)(nil)
 var _ WebSocketClientContract = (*Client)(nil)
+
+// SDKClientContract exposes streaming, SDK-owned HTTP integration.
+type SDKClientContract interface {
+	RoundTripper() http.RoundTripper
+	HTTPClient() *http.Client
+}
+
+var _ SDKClientContract = (*Client)(nil)
