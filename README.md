@@ -115,7 +115,7 @@ defer conn.Close(network.StatusNormalClosure, "done")
 err = conn.Write(ctx, network.MessageText, []byte("hello"))
 ```
 
-HTTP(S) and WS(S) URLs are supported. WebSockets share transport, default headers, cookie jar, redirect policy, and handshake logging. The dialer exposes at most 1024 bytes of an unsuccessful handshake body for logging. Handshake timeout falls back to the client timeout; it does not set a connection lifetime deadline. The default message read limit is 1 MiB. Message reads, writes, and pings take their own contexts. Keep a reader active to process ping/pong and close frames. Reconnection and message replay are application responsibilities. `WebSocket` aliases `coder/websocket.Conn`, so its streaming, concurrency, and close semantics apply directly. HTTP response consumers and retry policies do not apply to WebSockets.
+HTTP(S) and WS(S) URLs are supported. WebSockets share transport, default headers, cookie jar, redirect policy, and handshake logging. The dialer exposes at most 1024 bytes of an unsuccessful handshake body for logging. Handshake timeout falls back to the client timeout; it does not set a connection lifetime deadline. The default message read limit is 1 MiB. Message reads, writes, and pings take their own contexts. Keep a reader active to process ping/pong and close frames. Reconnection and message replay are application responsibilities. WebSocket support is built on [`coder/websocket`](https://github.com/coder/websocket): `WebSocket` aliases [`websocket.Conn`](https://pkg.go.dev/github.com/coder/websocket#Conn), so its streaming, concurrency, and close semantics apply directly. HTTP response consumers and retry policies do not apply to WebSockets.
 
 ## Redirects, sessions, proxies, and uploads
 
@@ -150,7 +150,7 @@ go tool cover -func=coverage.out
 go vet ./...
 ```
 
-Maintain at least **90% statement coverage**. Tests use local loopback HTTP/TLS/WebSocket and proxy servers; no external service is required. Go may need to download the pinned WebSocket module on the first run.
+Maintain at least **90% statement coverage**. Tests use local loopback HTTP/TLS/WebSocket and proxy servers; no external service is required. Go may need to download the pinned [`coder/websocket`](https://github.com/coder/websocket) module on the first run.
 
 ## SDK integration and deferred validation
 
@@ -206,3 +206,7 @@ bounded snapshots and context values until reported or released; always Release
 after successful validation. Reporting does not change the completed HTTP result
 or trigger retries. Capture and emitted fields still obey the logging policy;
 no handler means no body capture.
+
+## Acknowledgments
+
+WebSocket support is powered by [`coder/websocket`](https://github.com/coder/websocket). Thanks to [Coder](https://github.com/coder) and the library's maintainers and contributors for providing a minimal, idiomatic, and context-first WebSocket implementation for Go.
