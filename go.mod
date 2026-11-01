@@ -1,4 +1,4 @@
-module network
+module github.com/io-da/network
 
 go 1.27
 
